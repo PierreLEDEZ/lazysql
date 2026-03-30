@@ -13,15 +13,21 @@ type Config struct {
 }
 
 type Connection struct {
-	Name     string     `yaml:"name"`
-	Driver   string     `yaml:"driver"`
-	Host     string     `yaml:"host"`
-	Port     int        `yaml:"port"`
-	User     string     `yaml:"user"`
-	Password string     `yaml:"password"`
-	Database string     `yaml:"database"`
-	Path     string     `yaml:"path"`
-	SSH      *SSHConfig `yaml:"ssh,omitempty"`
+	Name         string       `yaml:"name"`
+	Driver       string       `yaml:"driver"`
+	Host         string       `yaml:"host"`
+	Port         int          `yaml:"port"`
+	User         string       `yaml:"user"`
+	Password     string       `yaml:"password"`
+	Database     string       `yaml:"database"`
+	Path         string       `yaml:"path"`
+	SSH          *SSHConfig   `yaml:"ssh,omitempty"`
+	SavedQueries []SavedQuery `yaml:"saved_queries,omitempty"`
+}
+
+type SavedQuery struct {
+	Name string `yaml:"name"`
+	SQL  string `yaml:"sql"`
 }
 
 type SSHConfig struct {

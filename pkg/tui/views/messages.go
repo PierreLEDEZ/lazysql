@@ -82,6 +82,20 @@ type ConnectionSavedMsg struct {
 	Err error
 }
 
+// Saved queries
+type SaveQueryMsg struct {
+	Name string
+	SQL  string
+}
+
+type DeleteSavedQueryMsg struct {
+	Index int
+}
+
+type LoadSavedQueryMsg struct {
+	SQL string
+}
+
 // Errors
 type ErrorMsg struct {
 	Err error

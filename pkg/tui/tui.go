@@ -47,6 +47,7 @@ type Model struct {
 	keys           KeyMap
 	queryHistory   []string
 	historyIdx     int
+	connIndex      int // index of active connection in config, -1 if none
 	spinner        spinner.Model
 	loading        bool
 	width          int
@@ -54,6 +55,7 @@ type Model struct {
 	status         string
 	lastLeftPanel  Panel
 	lastRightPanel Panel
+	pendingSaveSQL string
 }
 
 func New(cfg *config.Config) Model {
@@ -74,6 +76,7 @@ func New(cfg *config.Config) Model {
 		config:         cfg,
 		keys:           DefaultKeyMap(),
 		historyIdx:     -1,
+		connIndex:      -1,
 		spinner:        s,
 		lastLeftPanel:  PanelConnections,
 		lastRightPanel: PanelQuery,
@@ -187,6 +190,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.ExecuteConfirmedMsg:
 		return m.executeSQL(msg.SQL, cmds)
+
+	case views.LoadSavedQueryMsg:
+		m.activeModal = nil
+		m.query.SetValue(msg.SQL)
+		cmd := m.switchPanel(PanelQuery)
+		m.status = "Query loaded"
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+
+	case views.DeleteSavedQueryMsg:
+		m.activeModal = nil
+		if m.connIndex >= 0 && m.connIndex < len(m.config.Connections) {
+			conn := &m.config.Connections[m.connIndex]
+			if msg.Index >= 0 && msg.Index < len(conn.SavedQueries) {
+				name := conn.SavedQueries[msg.Index].Name
+				conn.SavedQueries = append(conn.SavedQueries[:msg.Index], conn.SavedQueries[msg.Index+1:]...)
+				if err := config.Save(m.config); err != nil {
+					m.status = fmt.Sprintf("Error: %s", err)
+				} else {
+					m.status = fmt.Sprintf("Query '%s' deleted", name)
+				}
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case views.SaveQueryMsg:
+		m.activeModal = nil
+		if m.connIndex >= 0 && m.connIndex < len(m.config.Connections) {
+			conn := &m.config.Connections[m.connIndex]
+			conn.SavedQueries = append(conn.SavedQueries, config.SavedQuery{
+				Name: msg.Name,
+				SQL:  msg.SQL,
+			})
+			if err := config.Save(m.config); err != nil {
+				m.status = fmt.Sprintf("Error saving: %s", err)
+			} else {
+				m.status = fmt.Sprintf("Query '%s' saved", msg.Name)
+			}
+		}
+		return m, tea.Batch(cmds...)
 
 	case views.ErrorMsg:
 		m.status = fmt.Sprintf("Error: %s", msg.Err)
@@ -367,6 +410,21 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd)
 			return m, nil
 		}
 
+	case "ctrl+s":
+		if m.activePanel == PanelQuery && m.connIndex >= 0 {
+			sql := strings.TrimSpace(m.query.Value())
+			if sql != "" {
+				m.openSaveQueryPrompt(sql)
+			}
+			return m, nil
+		}
+
+	case "S":
+		if !queryFocused && m.connIndex >= 0 {
+			m.openSavedQueries()
+			return m, nil
+		}
+
 	case "ctrl+e", "f5":
 		if m.activePanel == PanelQuery {
 			sql := strings.TrimSpace(m.query.Value())
@@ -434,6 +492,7 @@ func (m Model) handleConnectMsg(msg views.ConnectMsg, cmds []tea.Cmd) (tea.Model
 	m.tunnel = msg.Tunnel
 	m.query.SetDriver(m.driver)
 	m.connName = m.driver.CurrentDatabase()
+	m.connIndex = m.connections.CursorIndex()
 	m.status = fmt.Sprintf("Connected to %s (%s)", m.connName, m.driver.DriverName())
 
 	driver := m.driver
@@ -474,6 +533,19 @@ func (m Model) handleFormSubmit(msg components.FormSubmitMsg, cmds []tea.Cmd) (t
 	m.activeModal = nil
 	vals := msg.Values
 
+	// Save query form — only has "name" key, no "driver"
+	if _, hasDriver := vals["driver"]; !hasDriver && m.pendingSaveSQL != "" {
+		name := strings.TrimSpace(vals["name"])
+		if name == "" {
+			m.status = "Query name cannot be empty"
+			m.pendingSaveSQL = ""
+			return m, tea.Batch(cmds...)
+		}
+		sql := m.pendingSaveSQL
+		m.pendingSaveSQL = ""
+		return m.Update(views.SaveQueryMsg{Name: name, SQL: sql})
+	}
+
 	port := 0
 	if vals["port"] != "" {
 		fmt.Sscanf(vals["port"], "%d", &port)
@@ -495,8 +567,6 @@ func (m Model) handleFormSubmit(msg components.FormSubmitMsg, cmds []tea.Cmd) (t
 		return m, tea.Batch(cmds...)
 	}
 
-	// Check if edit mode (stored in status as a hack — will improve)
-	// For now, always add. Edit mode passes index via a different path.
 	m.config.AddConnection(conn)
 	if err := config.Save(m.config); err != nil {
 		m.status = fmt.Sprintf("Error saving: %s", err)
@@ -542,6 +612,12 @@ func (m Model) updateModal(msg tea.Msg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 		return m.handleConfirmResult(msg.(components.ConfirmResultMsg), cmds)
 	case components.FormSubmitMsg:
 		return m.handleFormSubmit(msg.(components.FormSubmitMsg), cmds)
+	case views.LoadSavedQueryMsg:
+		return m.Update(msg)
+	case views.DeleteSavedQueryMsg:
+		return m.Update(msg)
+	case views.SaveQueryMsg:
+		return m.Update(msg)
 	}
 
 	if m.activeModal != nil {
@@ -660,13 +736,17 @@ func (m Model) contextHints() string {
 		if queryFocused {
 			h.WriteString(hint("esc", "normal"))
 			h.WriteString(hint("ctrl+e", "execute"))
+			h.WriteString(hint("ctrl+s", "save"))
 		} else {
 			h.WriteString(hint("i", "insert"))
 			h.WriteString(hint("ctrl+e", "execute"))
+			h.WriteString(hint("ctrl+s", "save"))
+			h.WriteString(hint("S", "list"))
 			h.WriteString(hint("ctrl+p/n", "history"))
 		}
 	case PanelResults:
-		h.WriteString(hint("↑↓", "scroll"))
+		h.WriteString(hint("↑↓", "rows"))
+		h.WriteString(hint("←→", "cols"))
 	}
 
 	h.WriteString(hint("q", "quit"))
@@ -837,6 +917,7 @@ func (m *Model) disconnect() {
 		m.tunnel = nil
 	}
 	m.connName = ""
+	m.connIndex = -1
 	m.connections.ClearConnected()
 	m.tables.Clear()
 	m.structure.Clear()
@@ -866,6 +947,30 @@ func (m *Model) openConnectionForm(mode string, conn *config.Connection, index i
 		title = "Edit Connection"
 	}
 	modal := components.NewModal(title, form, 0.6, 0.7)
+	modal.SetScreenSize(m.width, m.height)
+	m.activeModal = &modal
+}
+
+func (m *Model) openSavedQueries() {
+	var queries []config.SavedQuery
+	if m.connIndex >= 0 && m.connIndex < len(m.config.Connections) {
+		queries = m.config.Connections[m.connIndex].SavedQueries
+	}
+	sq := views.NewSavedQueries(queries)
+	connName := m.connName
+	modal := components.NewModal(fmt.Sprintf("Saved Queries — %s", connName), sq, 0.7, 0.6)
+	modal.SetScreenSize(m.width, m.height)
+	m.activeModal = &modal
+}
+
+func (m *Model) openSaveQueryPrompt(sql string) {
+	fields := []components.FormField{
+		{Label: "Name", Key: "name", Placeholder: "e.g. list-active-users"},
+	}
+	form := components.NewForm(fields)
+	// Store SQL in status temporarily — will be used by handleSaveQueryForm
+	m.pendingSaveSQL = sql
+	modal := components.NewModal("Save Query", form, 0.5, 0.3)
 	modal.SetScreenSize(m.width, m.height)
 	m.activeModal = &modal
 }

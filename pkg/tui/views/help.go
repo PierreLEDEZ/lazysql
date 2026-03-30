@@ -75,6 +75,8 @@ func buildHelpContent(keys interface{}) string {
 	binding("i / a", "Enter INSERT mode (start typing)")
 	binding("esc", "Return to NORMAL mode")
 	binding("ctrl+e / F5", "Execute current query")
+	binding("ctrl+s", "Save current query to connection")
+	binding("S (normal mode)", "Open saved queries list")
 	binding("ctrl+p", "Previous query from history")
 	binding("ctrl+n", "Next query from history")
 	binding("", "Destructive queries require confirmation")
